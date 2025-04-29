@@ -15,6 +15,7 @@ import time
 import json
 import os
 
+from picamera2 import Picamera2
 shared_frame = None  # Shared buffer for camera frame
 SETTINGS_FILE = "motion_settings.json"
 
@@ -80,10 +81,12 @@ class LiveViewScreen(Screen):
         self.layout.add_widget(self.button_panel)
         self.add_widget(self.layout)
 
-                # Try normal USB camera first
-        self.capture = cv2.VideoCapture(0)
+                        # Initialize PiCamera2
+        self.picam2 = Picamera2()
+        self.picam2.start()
         time.sleep(2)
-        ret, frame = self.capture.read()
+        frame = self.picam2.capture_array()
+        ret = True
         if not ret or frame is None:
             # Try using GStreamer pipeline (for Pi Camera)
             self.capture = cv2.VideoCapture(
@@ -91,7 +94,8 @@ class LiveViewScreen(Screen):
                 cv2.CAP_GSTREAMER
             )
             time.sleep(2)
-            ret, frame = self.capture.read()
+            frame = self.picam2.capture_array()
+        ret = True
         ret, frame = self.capture.read()
         if ret and frame is not None:
             self.height, self.width, _ = frame.shape
@@ -142,7 +146,7 @@ class LiveViewScreen(Screen):
 
     def stop_app(self, *args):
         self.save_settings_to_file()
-        self.capture.release()
+        self.picam2.stop()
         App.get_running_app().stop()
 
     def update_zones(self):
