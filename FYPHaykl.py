@@ -1,4 +1,4 @@
-﻿from kivy.app import App
+from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
@@ -80,8 +80,18 @@ class LiveViewScreen(Screen):
         self.layout.add_widget(self.button_panel)
         self.add_widget(self.layout)
 
+                # Try normal USB camera first
         self.capture = cv2.VideoCapture(0)
         time.sleep(2)
+        ret, frame = self.capture.read()
+        if not ret or frame is None:
+            # Try using GStreamer pipeline (for Pi Camera)
+            self.capture = cv2.VideoCapture(
+                "libcamerasrc ! video/x-raw,width=640,height=480,format=YUY2 ! videoconvert ! appsink",
+                cv2.CAP_GSTREAMER
+            )
+            time.sleep(2)
+            ret, frame = self.capture.read()
         ret, frame = self.capture.read()
         if ret and frame is not None:
             self.height, self.width, _ = frame.shape
@@ -136,8 +146,15 @@ class LiveViewScreen(Screen):
         App.get_running_app().stop()
 
     def update_zones(self):
-        cx = self.width // 2 + self.zone_offset_x
-        cy = self.height // 2 + self.zone_offset_y
+        frame_width = 640
+        frame_height = 480
+        if self.capture.isOpened():
+            ret, frame = self.capture.read()
+            if ret and frame is not None:
+                frame_height, frame_width, _ = frame.shape
+
+        cx = frame_width // 2 + self.zone_offset_x
+        cy = frame_height // 2 + self.zone_offset_y
 
         self.outer_zone = np.array([
             [cx - self.outer_width // 2, cy + self.outer_height // 2],
@@ -480,6 +497,11 @@ class SplashScreen(Screen):
 
 class MotionApp(App):
     def build(self):
+        Window.clearcolor = (0.1, 0.2, 0.3, 1)
+        Window.title = "P.I.S.A.U"
+        Window.size = (800, 480)
+        Window.fullscreen = 'auto'
+        Window.borderless = True
         Window.clearcolor = (0.1, 0.2, 0.3, 1)
         Window.title = "P.I.S.A.U"
         sm = ScreenManager(transition=FadeTransition())
