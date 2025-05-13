@@ -14,8 +14,9 @@ import numpy as np
 import time
 import json
 import os
+import platform
+import subprocess
 
-from picamera2 import Picamera2
 shared_frame = None  # Shared buffer for camera frame
 SETTINGS_FILE = "motion_settings.json"
 
@@ -81,21 +82,11 @@ class LiveViewScreen(Screen):
         self.layout.add_widget(self.button_panel)
         self.add_widget(self.layout)
 
-                        # Initialize PiCamera2
-        self.picam2 = Picamera2()
-        self.picam2.start()
+                        # Initialize USB Camera
+        self.capture = cv2.VideoCapture(0, cv2.CAP_V4L2)  # For Pi Camera using V4L2
+        if not self.capture.isOpened():
+            print("[ERROR] Failed to open Pi Camera. Check connection and V4L2.")
         time.sleep(2)
-        frame = self.picam2.capture_array()
-        ret = True
-        if not ret or frame is None:
-            # Try using GStreamer pipeline (for Pi Camera)
-            self.capture = cv2.VideoCapture(
-                "libcamerasrc ! video/x-raw,width=640,height=480,format=YUY2 ! videoconvert ! appsink",
-                cv2.CAP_GSTREAMER
-            )
-            time.sleep(2)
-            frame = self.picam2.capture_array()
-        ret = True
         ret, frame = self.capture.read()
         if ret and frame is not None:
             self.height, self.width, _ = frame.shape
@@ -139,15 +130,69 @@ class LiveViewScreen(Screen):
         current_date = time.strftime("%d/%m/%Y")
         self.date_label.text = f"Date: {current_date}"
         self.status_indicator_label.text = f"Status: {self.machine_status}"
-        
-        # Dummy updates for battery and WiFi (replace with real Raspberry Pi functions later)
+    
         self.battery_label.text = "Battery: 100%"
-        self.wifi_label.text = "WiFi: Connected"
+
+        os_type = platform.system()
+        if os_type == "Linux":
+            try:
+                wifi = subprocess.check_output(["iwgetid", "-r"]).decode().strip()
+                if wifi:
+                    self.wifi_label.text = f"WiFi: {wifi}"
+                else:
+                    self.wifi_label.text = "WiFi: Not Connected"
+            except Exception:
+                self.wifi_label.text = "WiFi: Unknown"
+        elif os_type == "Windows":
+            try:
+                result = subprocess.run(["netsh", "wlan", "show", "interfaces"], capture_output=True, text=True)
+                output = result.stdout
+                if result.returncode != 0 or not output:
+                    self.wifi_label.text = "WiFi: No Wi-Fi Adapter"
+                elif "SSID" in output:
+                    for line in output.split("\n"):
+                        if "SSID" in line and "BSSID" not in line:
+                            wifi_name = line.split(":")[1].strip()
+                            self.wifi_label.text = f"WiFi: {wifi_name}"
+                            break
+                    else:
+                        self.wifi_label.text = "WiFi: Not Connected"
+                else:
+                    self.wifi_label.text = "WiFi: Not Connected"
+            except Exception:
+                self.wifi_label.text = "WiFi: Unknown"
 
     def stop_app(self, *args):
-        self.save_settings_to_file()
-        self.picam2.stop()
-        App.get_running_app().stop()
+        self.capture.release()
+        splash_screen = self.manager_ref.get_screen('splash')
+        splash_screen.label.text = "Shutting down..."
+        self.manager_ref.current = 'splash'
+        Clock.schedule_once(self.start_fade_to_black, 2)  # Wait 2 seconds before fade
+
+    def start_fade_to_black(self, dt):
+        splash_screen = self.manager_ref.get_screen('splash')
+        with splash_screen.canvas.after:
+            self.fade_color = Color(0, 0, 0, 0)
+            self.fade_rect = Rectangle(size=splash_screen.size, pos=splash_screen.pos)
+        splash_screen.bind(size=self._update_fade_rect, pos=self._update_fade_rect)
+
+        self.fade_alpha = 0
+        Clock.schedule_interval(self.fade_to_black, 0.05)
+
+    def fade_to_black(self, dt):
+        if self.fade_alpha < 1:
+            self.fade_alpha += 0.05
+            self.fade_color.rgba = (0, 0, 0, self.fade_alpha)
+        else:
+            Clock.schedule_once(lambda dt: App.get_running_app().stop(), 1)
+            return False
+        return True
+
+    def _update_fade_rect(self, instance, value):
+        if hasattr(self, 'fade_rect'):
+            self.fade_rect.size = instance.size
+            self.fade_rect.pos = instance.pos
+
 
     def update_zones(self):
         frame_width = 640
@@ -489,6 +534,8 @@ class SplashScreen(Screen):
             greeting = "Good Morning"
         elif 12 <= current_hour < 18:
             greeting = "Good Afternoon"
+        elif 5 > current_hour < 24:
+            greeting = "Go To Sleep"
         else:
             greeting = "Good Evening"
         self.label.text = greeting
@@ -520,4 +567,3 @@ class MotionApp(App):
 
 if __name__ == '__main__':
     MotionApp().run()   # <-- THIS WAS MISSING
-
