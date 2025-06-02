@@ -14,13 +14,6 @@ except ImportError:
     GPIO = mock.MagicMock()
 
 import BlynkLib
-
-# ───────────────────────────────────────────────────────────────
-# HARDCODE YOUR BLYNK AUTH TOKEN HERE (no environment needed)
-# ───────────────────────────────────────────────────────────────
-blynk = BlynkLib.Blynk('eA9DH2EjNhHTJFCjN6NzHxvrlIs4Xgwj')
-
-
 import threading
 
 from kivy.app import App
@@ -31,12 +24,16 @@ from kivy.graphics.texture import Texture
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
-from kivy.uix.popup import Popup
 from kivy.uix.button import Button
 from kivy.uix.slider import Slider
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.image import Image
 from kivy.uix.scrollview import ScrollView
+
+# ───────────────────────────────────────────────────────────────
+# HARDCODE YOUR BLYNK AUTH TOKEN HERE (no environment needed)
+# ───────────────────────────────────────────────────────────────
+blynk = BlynkLib.Blynk('eA9DH2EjNhHTJFCjN6NzHxvrlIs4Xgwj')
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CONSTANTS & GPIO PINS
@@ -219,7 +216,7 @@ class MotorSimulator:
             delta = self.current_rpm - self.set_rpm
             self.current_rpm -= min(int(delta * 0.3), 100)
 
-        # 3) Temperature update (unchanged)
+        # 3) Temperature update
         if self.set_speed_percent > 55:
             temp_increase_rate = 0.15 + (self.set_speed_percent / 100) * 0.2
         elif self.set_speed_percent < 40:
@@ -228,7 +225,7 @@ class MotorSimulator:
             temp_increase_rate = 0.05
         self.temperature += temp_increase_rate
 
-        # 4) Cooling logic (unchanged)
+        # 4) Cooling logic
         if self.set_speed_percent <= 20:
             self.temperature -= 0.03
         elif self.set_speed_percent == 0:
@@ -237,13 +234,13 @@ class MotorSimulator:
             if self.temperature > BASELINE_TEMP + 5:
                 self.temperature = min(self.temperature, BASELINE_TEMP + 70)
 
-        # 5) Clamp temperature (unchanged)
+        # 5) Clamp temperature
         if self.temperature < 0:
             self.temperature = 0.0
         if self.temperature > 70.0:
             self.temperature = 70.0
 
-        # 6) Gradual slow-down if temperature ≥ 60 °C (unchanged)
+        # 6) Gradual slow-down if temperature ≥ 60 °C
         if self.temperature >= 60.0 and not self.slow_down:
             self.original_speed_percent = self.set_speed_percent
             self.slow_down = True
@@ -259,7 +256,7 @@ class MotorSimulator:
             else:
                 self.slow_down = False
 
-        # 7) Slight fluctuation when motor off & temp near baseline (unchanged)
+        # 7) Slight fluctuation when motor off & temp near baseline
         if (not self.slow_down
                 and self.set_speed_percent == 0
                 and abs(self.temperature - BASELINE_TEMP) < 0.01):
@@ -304,22 +301,88 @@ def save_run_hours(hours: float):
 # ──────────────────────────────────────────────────────────────────────────────
 
 @blynk.on("V5")
-def handle_speed_slider(pin, *args):
-    if not args: return
-    percent = int(args[0])
-    App.get_running_app().root.get_screen("live").on_speed_button(percent)
+def handle_speed_slider(value):
+    """
+    V5 is the speed slider (0–100).  When Blynk sends a new value, we:
+      1. Check physical Motor Switch
+      2. Check not in emergency/post-emergency
+      3. Directly set motor.set_speed(percent), skipping hold-to-start
+    """
+    if not value or len(value) == 0:
+        return
 
-@blynk.on("V3")
-def handle_emergency_button(pin, *args):
-    if not args: return
-    if int(args[0]) == 1:
-        App.get_running_app().root.get_screen("live").activate_emergency(None)
+    percent = int(value[0])
+    app = App.get_running_app()
+    live = app.root.get_screen("live")
+
+    # Check physical Motor Switch state:
+    if platform.system() == "Windows":
+        motor_switch_on = not live.fake_motor_switch
+    else:
+        motor_switch_on = (GPIO.input(MOTOR_SWITCH) == GPIO.LOW)
+
+    # If switch is OFF, show popup and do nothing:
+    if not motor_switch_on:
+        Clock.schedule_once(lambda dt: live.show_popup("Please Turn On The Motor Switch"))
+        return
+
+    # If emergency or post‐emergency, ignore:
+    if live.motor.in_emergency or live.motor.post_emergency:
+        return
+
+    # DIRECTLY set speed on the motor simulator (bypass start_confirmed):
+    live.motor.set_speed(percent)
+
 
 @blynk.on("V4")
-def handle_dig_toggle(pin, *args):
-    if not args: return
-    if int(args[0]) == 1:
-        App.get_running_app().root.get_screen("live").on_dig_toggle(None)
+def handle_dig_toggle(value):
+    """
+    V4 is the Dig Toggle (SWITCH).  When Blynk sends '1':
+      1. Check physical Motor Switch
+      2. Check not in emergency/post-emergency
+      3. Directly call motor.toggle_digital(), skipping hold-to-start
+    """
+    if not value or len(value) == 0:
+        return
+
+    if int(value[0]) != 1:
+        return
+
+    app = App.get_running_app()
+    live = app.root.get_screen("live")
+
+    # Check physical Motor Switch state:
+    if platform.system() == "Windows":
+        motor_switch_on = not live.fake_motor_switch
+    else:
+        motor_switch_on = (GPIO.input(MOTOR_SWITCH) == GPIO.LOW)
+
+    if not motor_switch_on:
+        Clock.schedule_once(lambda dt: live.show_popup("Please Turn On The Motor Switch"))
+        return
+
+    # If emergency or post‐emergency, ignore:
+    if live.motor.in_emergency or live.motor.post_emergency:
+        return
+
+    # DIRECTLY toggle digital (bypass start_confirmed):
+    live.motor.toggle_digital()
+
+
+@blynk.on("V3")
+def handle_emergency_button(value):
+    """
+    V3 is the Emergency Stop (SWITCH).  When Blynk sends '1', immediately
+    trigger emergency—same as pressing the on-screen EMERGENCY button.
+    """
+    if not value or len(value) == 0:
+        return
+
+    if int(value[0]) == 1:
+        app = App.get_running_app()
+        live = app.root.get_screen("live")
+        Clock.schedule_once(lambda dt: live.activate_emergency(None))
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # KIVY APP
@@ -349,6 +412,13 @@ class SplashScreen(Screen):
 class LiveViewScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+
+        # ───────────────────────────────────────────────────
+        # Flags to track warnings/popups
+        self._temp_warning_shown = False
+        self._popup_active = False
+        self._last_popup_text = ""
+        # ───────────────────────────────────────────────────
 
         # ───────────────────────────────────────────────────
         # 1) HANDLE “FAKE” MOTOR SWITCH ON WINDOWS & KEYBOARD
@@ -417,11 +487,11 @@ class LiveViewScreen(Screen):
         presets_layout.add_widget(self.btn_dig_toggle)
 
         self.btn_slow = Button(text="Slow")
-        self.btn_slow.bind(on_press=lambda x: self.on_speed_button(30))
+        self.btn_slow.bind(on_press=lambda x: self.on_speed_button(20))
         self.btn_medium = Button(text="Medium")
-        self.btn_medium.bind(on_press=lambda x: self.on_speed_button(60))
+        self.btn_medium.bind(on_press=lambda x: self.on_speed_button(50))
         self.btn_fast = Button(text="Fast")
-        self.btn_fast.bind(on_press=lambda x: self.on_speed_button(100))
+        self.btn_fast.bind(on_press=lambda x: self.on_speed_button(90))
         self.btn_manual = Button(text="Manual Ovr")
         self.btn_manual.bind(on_press=self.open_manual_override)
 
@@ -471,7 +541,7 @@ class LiveViewScreen(Screen):
         self.main_layout.add_widget(self.status_label)
 
         # ───────────────────────────────────────────────────
-        # 8) BOTTOM ROW (EMERGENCY STOP, SETTINGS, HOLD TO START)
+        # 8) BOTTOM ROW (EMERGENCY STOP, SETTINGS, HOLD TO START, TOGGLE BLYNK)
         # ───────────────────────────────────────────────────
         bottom_layout = BoxLayout(size_hint_y=None, height=BOTTOM_ROW_HEIGHT, spacing=10, padding=5)
         self.btn_emergency = Button(text="EMERGENCY STOP", background_color=(1, 0, 0, 1))
@@ -485,6 +555,11 @@ class LiveViewScreen(Screen):
         # “Hold To Start” button
         self.btn_hold_to_start = Button(text="Hold To Start", size_hint_x=0.2)
         bottom_layout.add_widget(self.btn_hold_to_start)
+
+        # Toggle Blynk Integration button
+        self.btn_toggle_blynk = Button(text="Blynk Off", size_hint_x=0.2)
+        self.btn_toggle_blynk.bind(on_press=self.toggle_blynk)
+        bottom_layout.add_widget(self.btn_toggle_blynk)
 
         self.main_layout.add_widget(bottom_layout)
 
@@ -529,11 +604,11 @@ class LiveViewScreen(Screen):
         # Manual override overlay
         self.manual_overlay = None
 
-        # Emergency & Post‐Emergency flags
+        # Emergency & Post-Emergency flags
         self.emergency_countdown_event = None
         self.emergency_touch_enabled = False
 
-        # Frame‐skip toggle (to reduce CPU load)
+        # Frame-skip toggle (to reduce CPU load)
         self.frame_toggle = False
 
         # Temperature/RPM blink events (optional)
@@ -542,7 +617,7 @@ class LiveViewScreen(Screen):
         self.temp_blink_state = False
         self.rpm_blink_state = False
 
-        # “Hold To Start” hold‐down scheduling
+        # “Hold To Start” hold-down scheduling
         self._hold_event = None
 
         # Runtime accumulation
@@ -610,8 +685,9 @@ class LiveViewScreen(Screen):
         # Update the bottom of Saw Status panel:
         self.lbl_run_hours.text = f"Run Hours: {self.run_hours:.1f} h"
 
-        # Send run hours to Blynk V2:
-        blynk.virtual_write(2, round(self.run_hours, 1))
+        # Send run hours to Blynk V2 if enabled:
+        if App.get_running_app().blynk_enabled:
+            blynk.virtual_write(2, round(self.run_hours, 1))
 
     # ──────────────────────────────────────────────────────────────────────────
     #  UI CALLBACKS (Preset Buttons, Dig Toggle, Manual Slider, Hold To Start)
@@ -863,18 +939,16 @@ class LiveViewScreen(Screen):
                 ssid = "--"
         self.wifi_label.text = f"WiFi: {ssid}"
 
-        # Send status text to Blynk V6:
-        status_text = self.status_indicator_label.text.replace("Status: ", "")
-        blynk.virtual_write(6, status_text)
+        # Send status text to Blynk V6 if enabled:
+        if App.get_running_app().blynk_enabled:
+            status_text = self.status_indicator_label.text.replace("Status: ", "")
+            blynk.virtual_write(6, status_text)
 
     # ──────────────────────────────────────────────────────────────────────────
     #  MOTOR & TEMPERATURE UPDATES (every 0.5 s)
     # ──────────────────────────────────────────────────────────────────────────
     def update_motor_status(self, dt):
-        if self.motor.in_emergency:
-            self.motor.update(dt)
-            return
-        if self.motor.post_emergency:
+        if self.motor.in_emergency or self.motor.post_emergency:
             self.motor.update(dt)
             return
 
@@ -893,17 +967,32 @@ class LiveViewScreen(Screen):
         self.lbl_temp.text = f"Temperature: {temp:.1f}°C"
         # lbl_run_hours is updated separately in update_run_hours()
 
-        # Send current RPM to Blynk V0 and temperature to V1:
-        blynk.virtual_write(0, cr)
-        blynk.virtual_write(1, int(temp))
+        # Send current RPM to Blynk V0 and temperature to V1 if enabled:
+        if App.get_running_app().blynk_enabled:
+            blynk.virtual_write(0, cr)
+            blynk.virtual_write(1, int(temp))
 
-        # 3) High‐temperature warning (≥ 60 °C)
-        if temp >= 60.0 and not self.motor.slow_down:
+        # 3) High-temperature warning (≥ 60 °C), only show once per over-temp event
+        if temp >= 60.0 and not self.motor.slow_down and not (
+            self._popup_active and self._last_popup_text == "Slow Saw Down to lower machine temperature"
+        ):
             self.show_popup("Slow Saw Down to lower machine temperature")
+            self._last_popup_text = "Slow Saw Down to lower machine temperature"
 
-        # 4) High‐RPM warning (≥ 2700 RPM)
-        if cr >= 2700 and not self.motor.slow_down:
+        # 4) High-RPM warning (≥ 2700 RPM), only show once per over-RPM event
+        if cr >= 2700 and not self.motor.slow_down and not (
+            self._popup_active and self._last_popup_text == "Slow Saw Down to save machine health"
+        ):
             self.show_popup("Slow Saw Down to save machine health")
+            self._last_popup_text = "Slow Saw Down to save machine health"
+
+        # 5) Reset the temperature‐warning flag once temperature drops below threshold
+        if temp < 60.0 and self._last_popup_text == "Slow Saw Down to lower machine temperature":
+            self._last_popup_text = ""
+
+        # 6) Reset the RPM‐warning flag once RPM drops below threshold
+        if cr < 2700 and self._last_popup_text == "Slow Saw Down to save machine health":
+            self._last_popup_text = ""
 
     # ──────────────────────────────────────────────────────────────────────────
     #  CAMERA / MOTION & HAND DETECTION (every frame)
@@ -1192,9 +1281,16 @@ class LiveViewScreen(Screen):
 
         # 5) Replace this screen with a fresh instance
         fresh = LiveViewScreen(name="live")
-        self.manager.remove_widget(self)
-        self.manager.add_widget(fresh)
-        self.manager.current = "live"
+
+        app = App.get_running_app()
+        sm = app.root  # Assuming the ScreenManager is the root widget
+
+        if sm:
+            sm.remove_widget(self)
+            sm.add_widget(fresh)
+            sm.current = "live"
+        else:
+            print("ERROR: No ScreenManager found in app root.")
 
     # ──────────────────────────────────────────────────────────────────────────
     #  POPUP UTILITY
@@ -1202,7 +1298,13 @@ class LiveViewScreen(Screen):
     def show_popup(self, text):
         """
         Display a transient pop‐up for 3 s with the given text.
+        If the same text is already active, do nothing.
         """
+        # If a popup is already active with this same text, skip.
+        if self._popup_active and text == self._last_popup_text:
+            return
+
+        # Create the overlay
         popup_overlay = FloatLayout(size=Window.size, size_hint=(None, None), pos=(0, 0))
         with popup_overlay.canvas:
             Color(0, 0, 0, 0.7)
@@ -1230,12 +1332,19 @@ class LiveViewScreen(Screen):
         lbl.text_size = (lbl_width, lbl_height)
         popup_overlay.add_widget(lbl)
 
+        # Remember this popup is active
+        self._popup_active = True
+        self._last_popup_text = text
+
         self.root_layout.add_widget(popup_overlay, index=-1)
         Clock.schedule_once(lambda dt: self._dismiss_popup(popup_overlay), 3.0)
 
     def _dismiss_popup(self, popup_overlay):
         if popup_overlay in self.root_layout.children:
             self.root_layout.remove_widget(popup_overlay)
+        # Allow future popups, including the same text if needed.
+        self._popup_active = False
+        self._last_popup_text = ""
 
     # ──────────────────────────────────────────────────────────────────────────
     #  SETTINGS SCREEN LOGIC (UNCHANGED except Reset Run Hours)
@@ -1285,6 +1394,20 @@ class LiveViewScreen(Screen):
         if self.capture.isOpened():
             self.capture.release()
         GPIO.cleanup()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    #  BLYNK TOGGLE BUTTON HANDLER
+    # ──────────────────────────────────────────────────────────────────────────
+    def toggle_blynk(self, instance):
+        """
+        Toggle the global blynk_enabled flag in the App, and update button text.
+        """
+        app = App.get_running_app()
+        app.blynk_enabled = not app.blynk_enabled
+        if app.blynk_enabled:
+            instance.text = "Blynk On"
+        else:
+            instance.text = "Blynk Off"
 
 
 class SettingsScreen(Screen):
@@ -1408,7 +1531,7 @@ class SettingsScreen(Screen):
         buf = cv2.flip(preview_frame, 0).tobytes()
         if not self.preview.texture:
             self.preview.texture = Texture.create(size=(w, h), colorfmt="bgr")
-        self.preview.texture.blit_buffer(buf, colorfmt="bgr", bufferfmt="ubyte")
+        self.preview.texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
 
 
 class MotionApp(App):
@@ -1416,6 +1539,9 @@ class MotionApp(App):
         super().__init__(**kwargs)
         self.motor = MotorSimulator()
         self.fake_motor_switch = True  # for status checks on Windows
+
+        # Blynk integration toggled off by default
+        self.blynk_enabled = False
 
     def build(self):
         sm = ScreenManager()
@@ -1443,7 +1569,11 @@ class MotionApp(App):
 
 
 if __name__ == "__main__":
-    Window.size = (800, 480)
-    Window.fullscreen = False
-    Window.borderless = False
+    # Always run fullscreen
+    Window.fullscreen = True
+
+    # Hide cursor on non-Windows platforms
+    if platform.system() != "Windows":
+        Window.show_cursor = False
+
     MotionApp().run()
