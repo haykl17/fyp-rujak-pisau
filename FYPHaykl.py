@@ -6,7 +6,7 @@ import time
 import numpy as np
 import cv2
 
-# Use mock GPIO when not on Raspberry Pi
+# mock GPIO when not on Raspberry Pi
 try:
     import RPi.GPIO as GPIO
 except ImportError:
@@ -31,7 +31,7 @@ from kivy.uix.image import Image
 from kivy.uix.scrollview import ScrollView
 
 # ───────────────────────────────────────────────────────────────
-# HARDCODE YOUR BLYNK AUTH TOKEN HERE (no environment needed)
+# BLYNK
 # ───────────────────────────────────────────────────────────────
 blynk = BlynkLib.Blynk('eA9DH2EjNhHTJFCjN6NzHxvrlIs4Xgwj')
 
@@ -541,7 +541,7 @@ class LiveViewScreen(Screen):
         self.main_layout.add_widget(self.status_label)
 
         # ───────────────────────────────────────────────────
-        # 8) BOTTOM ROW (EMERGENCY STOP, SETTINGS, HOLD TO START, TOGGLE BLYNK)
+        # 8) BOTTOM ROW (EMERGENCY STOP, SETTINGS, HOLD TO START)
         # ───────────────────────────────────────────────────
         bottom_layout = BoxLayout(size_hint_y=None, height=BOTTOM_ROW_HEIGHT, spacing=10, padding=5)
         self.btn_emergency = Button(text="EMERGENCY STOP", background_color=(1, 0, 0, 1))
@@ -555,11 +555,6 @@ class LiveViewScreen(Screen):
         # “Hold To Start” button
         self.btn_hold_to_start = Button(text="Hold To Start", size_hint_x=0.2)
         bottom_layout.add_widget(self.btn_hold_to_start)
-
-        # Toggle Blynk Integration button
-        self.btn_toggle_blynk = Button(text="Blynk Off", size_hint_x=0.2)
-        self.btn_toggle_blynk.bind(on_press=self.toggle_blynk)
-        bottom_layout.add_widget(self.btn_toggle_blynk)
 
         self.main_layout.add_widget(bottom_layout)
 
@@ -685,9 +680,8 @@ class LiveViewScreen(Screen):
         # Update the bottom of Saw Status panel:
         self.lbl_run_hours.text = f"Run Hours: {self.run_hours:.1f} h"
 
-        # Send run hours to Blynk V2 if enabled:
-        if App.get_running_app().blynk_enabled:
-            blynk.virtual_write(2, round(self.run_hours, 1))
+        # Send run hours to Blynk V2 unconditionally:
+        blynk.virtual_write(2, round(self.run_hours, 1))
 
     # ──────────────────────────────────────────────────────────────────────────
     #  UI CALLBACKS (Preset Buttons, Dig Toggle, Manual Slider, Hold To Start)
@@ -939,10 +933,9 @@ class LiveViewScreen(Screen):
                 ssid = "--"
         self.wifi_label.text = f"WiFi: {ssid}"
 
-        # Send status text to Blynk V6 if enabled:
-        if App.get_running_app().blynk_enabled:
-            status_text = self.status_indicator_label.text.replace("Status: ", "")
-            blynk.virtual_write(6, status_text)
+        # Send status text to Blynk V6 unconditionally:
+        status_text = self.status_indicator_label.text.replace("Status: ", "")
+        blynk.virtual_write(6, status_text)
 
     # ──────────────────────────────────────────────────────────────────────────
     #  MOTOR & TEMPERATURE UPDATES (every 0.5 s)
@@ -967,10 +960,9 @@ class LiveViewScreen(Screen):
         self.lbl_temp.text = f"Temperature: {temp:.1f}°C"
         # lbl_run_hours is updated separately in update_run_hours()
 
-        # Send current RPM to Blynk V0 and temperature to V1 if enabled:
-        if App.get_running_app().blynk_enabled:
-            blynk.virtual_write(0, cr)
-            blynk.virtual_write(1, int(temp))
+        # Send current RPM to Blynk V0 and temperature to V1 unconditionally:
+        blynk.virtual_write(0, cr)
+        blynk.virtual_write(1, int(temp))
 
         # 3) High-temperature warning (≥ 60 °C), only show once per over-temp event
         if temp >= 60.0 and not self.motor.slow_down and not (
@@ -1395,20 +1387,6 @@ class LiveViewScreen(Screen):
             self.capture.release()
         GPIO.cleanup()
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  BLYNK TOGGLE BUTTON HANDLER
-    # ──────────────────────────────────────────────────────────────────────────
-    def toggle_blynk(self, instance):
-        """
-        Toggle the global blynk_enabled flag in the App, and update button text.
-        """
-        app = App.get_running_app()
-        app.blynk_enabled = not app.blynk_enabled
-        if app.blynk_enabled:
-            instance.text = "Blynk On"
-        else:
-            instance.text = "Blynk Off"
-
 
 class SettingsScreen(Screen):
     def __init__(self, **kwargs):
@@ -1539,9 +1517,6 @@ class MotionApp(App):
         super().__init__(**kwargs)
         self.motor = MotorSimulator()
         self.fake_motor_switch = True  # for status checks on Windows
-
-        # Blynk integration toggled off by default
-        self.blynk_enabled = False
 
     def build(self):
         sm = ScreenManager()
